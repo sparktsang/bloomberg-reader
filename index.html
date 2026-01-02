@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bloomberg Source Extractor</title>
+    <title>Bloomberg Source Extractor (Advanced)</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; background-color: #f5f5f5; color: #333; }
         h1 { font-size: 1.2rem; color: #555; }
@@ -12,13 +12,12 @@
         button:hover { background-color: #333; }
         #output { margin-top: 30px; background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); white-space: pre-wrap; font-family: Georgia, 'Times New Roman', Times, serif; font-size: 1.1rem; line-height: 1.6; display: none; }
         .error { color: red; font-weight: bold; margin-top: 10px; font-family: monospace; text-transform: uppercase; }
-        .divider { border-top: 1px solid #ddd; margin: 20px 0; }
-        .caption { font-size: 0.9rem; color: #666; font-style: italic; margin-top: 5px; display: block; }
+        .success { color: green; font-weight: bold; margin-top: 10px; font-family: monospace; }
     </style>
 </head>
 <body>
 
-    <h1>Bloomberg Source Extractor</h1>
+    <h1>Bloomberg Source Extractor (Advanced)</h1>
     <textarea id="sourceInput" placeholder="Paste all content in 'view-source:' here..."></textarea>
     <button onclick="processHTML()">Extract Article</button>
     <div id="status" class="error"></div>
@@ -71,7 +70,6 @@
             }
 
             // 3. Navigate the JSON structure
-            // Bloomberg structure: props -> pageProps -> story -> body -> content
             const story = data?.props?.pageProps?.story;
             
             if (!story) {
@@ -85,13 +83,11 @@
             output.push("");
             output.push(story.headline || "");
             
-            // Summary / Dek
-            // Bloomberg sometimes puts summary in 'summary' field or first paragraph of body
+            // Summary / Dek (Strip HTML tags)
             if (story.summary && typeof story.summary === 'string') {
-                 output.push(story.summary);
+                 output.push(cleanText(story.summary));
             } else if (story.summaryHtml) {
-                 // Simple strip tags if HTML summary exists
-                 output.push(story.summaryHtml.replace(/<[^>]*>?/gm, ''));
+                 output.push(cleanText(story.summaryHtml.replace(/<[^>]*>?/gm, '')));
             }
             output.push("");
 
@@ -111,15 +107,15 @@
             output.push("------------------------------------------------");
             output.push("");
 
-            // --- Body Content ---
+            // --- Body Content (Recursively parse text nodes) ---
             const bodyContent = story.body?.content || [];
 
             bodyContent.forEach(block => {
                 const type = block.type;
                 
-                // Paragraphs
+                // Paragraphs: Use recursive parser to catch links, bold, italics within
                 if (type === "paragraph") {
-                    const text = block.content.map(item => item.value || "").join("");
+                    const text = parseRichText(block.content);
                     if (text.trim()) {
                         output.push(text);
                         output.push("");
@@ -127,7 +123,7 @@
                 } 
                 // Headings
                 else if (type === "heading") {
-                    const text = block.content.map(item => item.value || "").join("");
+                    const text = parseRichText(block.content);
                     if (text.trim()) {
                         output.push("");
                         output.push(text.toUpperCase());
@@ -136,9 +132,13 @@
                 }
                 // Images
                 else if (type === "media" && block.subType === "photo") {
-                    const caption = block.photo?.caption || block.data?.photo?.caption || "";
+                    // Try multiple locations for caption
+                    const caption = block.photo?.caption || 
+                                    block.data?.photo?.caption || 
+                                    block.data?.caption || 
+                                    "";
                     if (caption) {
-                        output.push(`[Image Caption: ${caption}]`);
+                        output.push(`[Image Caption: ${cleanText(caption)}]`);
                         output.push("");
                     }
                 }
@@ -146,7 +146,8 @@
                 else if (type === "list") {
                     const items = block.content || [];
                     items.forEach(li => {
-                         const liText = li.content.map(i => i.value || "").join("");
+                         // ListItemBlock also has 'content' array
+                         const liText = parseRichText(li.content);
                          if(liText) output.push("• " + liText);
                     });
                     output.push("");
@@ -158,6 +159,37 @@
             output.push("Original URL: " + (story.url || ""));
 
             return output.join("\n");
+        }
+
+        // --- Helper: Recursively extract text from complex content arrays ---
+        // This fixes the issue where links (type: 'link') were being skipped.
+        function parseRichText(contentArray) {
+            if (!contentArray || !Array.isArray(contentArray)) return "";
+            
+            return contentArray.map(item => {
+                // Case 1: Simple text node
+                if (item.type === "text") {
+                    return item.value || "";
+                }
+                // Case 2: Link node (contains nested 'content')
+                // Case 3: Emphasis/Strong node (contains nested 'content')
+                else if (item.content && Array.isArray(item.content)) {
+                    return parseRichText(item.content);
+                }
+                return "";
+            }).join("");
+        }
+
+        // --- Helper: Clean HTML entities like &nbsp; ---
+        function cleanText(str) {
+            if (!str) return "";
+            return str
+                .replace(/&nbsp;/g, ' ')
+                .replace(/&#x27;/g, "'")
+                .replace(/&amp;/g, "&")
+                .replace(/&#x2019;/g, "’")
+                .replace(/&#x201C;/g, "“")
+                .replace(/&#x201D;/g, "”");
         }
 
         function formatDate(isoString) {
